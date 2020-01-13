@@ -296,7 +296,6 @@ func (c *Cluster) extractInstaller() error {
 
 func (c *Cluster) writeInstallConfig() error {
 	tpl, err := template.ParseFiles(fmt.Sprintf("./templates/installer/%s/%s", c.opts.provider, "install-config.yaml"))
-//	tpl, err := template.ParseFiles(fmt.Sprintf("../../templates/installer/%s/%s", c.opts.provider, "install-config.yaml"))
 
 	if err != nil {
 		return err
