@@ -5,25 +5,27 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 	"io"
 	"io/ioutil"
 	"k8s.io/klog"
 	"net/http"
 	"net/url"
 	"os"
-	"os/user"
-	"text/template"
-	"time"
 	"os/exec"
+	"os/user"
 	"runtime"
 	"sync"
+	"text/template"
+	"time"
 
 	"github.com/hexfusion/dev-installer/pkg/cluster/admin/release"
+	"github.com/hexfusion/dev-installer/pkg/cluster/config"
 	imagemanifest "github.com/hexfusion/dev-installer/pkg/cluster/image/manifest"
 	"github.com/hexfusion/dev-installer/pkg/cluster/registry"
 
+	"github.com/ghodss/yaml"
+	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	kcmdutil "k8s.io/kubectl/pkg/cmd/util"
 )
@@ -46,10 +48,6 @@ type clusterOpts struct {
 
 const (
 	cloudRedHatTokenUrl = "https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token"
-	// https://cloud.redhat.com/beta/openshift/token
-	cloudRedHatToken = ""
-    quayRedhatToken = ""
-	quayRedhatEmail = ""
     )
 
 // NewClusterCommand creates a new cluster
@@ -88,7 +86,7 @@ func NewClusterCommand(errOut io.Writer) *cobra.Command {
 func (c *clusterOpts) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVarP(&c.name, "name", "n", c.name, "cluster name")
 	fs.StringVarP(&c.provider, "provider", "p", c.provider, "cluster provider")
-	fs.StringVar(&c.pullSecret, "pull-secret", c.pullSecret, "pull secret to use for cluster creation")
+	fs.StringVarP(&c.pullSecret, "pull-secret", "a", c.pullSecret, "pull secret to use for cluster creation")
 	fs.StringVarP(&c.releaseImage, "release", "r", c.releaseImage, "release image")
 	fs.StringVarP(&c.releaseImageType, "release-type", "t", c.releaseImageType, "the type of release image used. Example CI, Nightly, Custom")
 	fs.StringVar(&c.installerPath, "installer-path", c.installerPath, "path of the compiled installer to use")
@@ -128,6 +126,7 @@ type Cluster struct {
 	PullSecrets []Auth
 	Dir string
 	TemplateData
+	Config config.File
 }
 
 type RedHatCloud struct {
@@ -158,16 +157,17 @@ type TemplateData struct {
 //}
 
 func newCluster(opts *clusterOpts) (*Cluster, error) {
-	if opts.baseDir == "" {
-
-	}
-
 	t := time.Now()
 	date := t.Format("2006-01-02")
 	user, err := user.Current()
 	if err != nil {
 		return nil, err
 	}
+
+	//confFile, err := getConfigFile()
+	//if err != nil {
+	//	return nil, err
+	//}
 
 	clusterName := fmt.Sprintf("%s-%s-%s",  user.Username, opts.name, date)
 	sshKey, err := ioutil.ReadFile(opts.sshKeyPath)
@@ -176,10 +176,12 @@ func newCluster(opts *clusterOpts) (*Cluster, error) {
 	}
 
 	dir := fmt.Sprintf("%s/%s/%s/%s-%s", opts.baseDir, opts.provider, date, opts.name, t.Format("15_04_05"))
+	fmt.Printf("Building cluster in %s", dir)
 	os.MkdirAll(dir, os.ModePerm)
 	cluster := Cluster{
 		opts: opts,
 		Dir: dir,
+		//Config: confFile,
 		TemplateData: TemplateData{
 			ClusterName: clusterName,
 			SSHKey: string(sshKey),
@@ -189,13 +191,33 @@ func newCluster(opts *clusterOpts) (*Cluster, error) {
 		},
 	}
 
-	if err := cluster.setPullSecret(); err != nil {
-		return nil, err
-	}
+	//if err := cluster.setPullSecret(); err != nil {
+	//	return nil, err
+	//}
 
-	if err := cluster.setPullSecretCI(); err != nil {
+	if opts.releaseImageType == "ci" && opts.pullSecret == "" {
+		if err := cluster.setPullSecretCI(); err != nil {
 			return nil, err
 		}
+	}
+
+	if opts.pullSecret != "" {
+		destinationFile := fmt.Sprintf("%s/%s", cluster.Dir, "CI_PULL_SECRET")
+		raw, err := ioutil.ReadFile(opts.pullSecret)
+		if err != nil {
+			return nil, err
+		}
+		err = ioutil.WriteFile(destinationFile, raw, 0644)
+		if err != nil {
+			return nil, err
+		}
+
+		pullSecret := new(bytes.Buffer)
+		if err := json.Compact(pullSecret, raw);err != nil {
+			return nil, err
+		}
+		cluster.TemplateData.PullSecret = pullSecret.String()
+	}
 
 	return &cluster, nil
 }
@@ -225,17 +247,32 @@ func (c *clusterOpts) Run() error {
 	return nil
 }
 
-func (t *Cluster) setPullSecret() error {
+// TODo Fix me
+func (c *Cluster) setPullSecret() error {
+	var cloudRedHatToken string
+
+	for _, token := range c.Config.Tokens {
+		if token.Registry == "cloud.redhat.com" {
+			cloudRedHatToken = token.Auth
+		}
+	}
+
+	if cloudRedHatToken != "" {
+		for registry := range []string{"registry.connect.redhat.com", "registry.redhat.io"} {
+			fmt.Printf("%+v", registry)
+		}
+	}
+
 	var r RedHatCloud
 	res, err := http.PostForm(cloudRedHatTokenUrl,
 		url.Values{"grant_type": {"refresh_token"}, "client_id": {"cloud-services"}, "refresh_token": {cloudRedHatToken}})
-	if err != nil {
+	if  err != nil {
 		return err
 	}
 	if err := json.NewDecoder(res.Body).Decode(&r);err != nil {
 		return err
 	}
-//	t.PullSecrets = r.AccessToken
+  //  c.PullSecrets = r.AccessToken
 	return nil
 }
 
@@ -292,6 +329,25 @@ func (c *Cluster) extractInstaller() error {
 		return err
 	}
 	return nil
+}
+
+func getConfigFile() (config.File, error) {
+	var c config.File
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return c, err
+	}
+	configPath := fmt.Sprintf("%s/.config/dev-installer/config.yaml",homeDir)
+	configFile, err := ioutil.ReadFile(configPath)
+	if err != nil {
+		return c, err
+	}
+
+	err = yaml.Unmarshal(configFile, &c)
+	if err != nil {
+		return c, err
+	}
+	return c, nil
 }
 
 func (c *Cluster) writeInstallConfig() error {
