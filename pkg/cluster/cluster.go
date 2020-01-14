@@ -372,6 +372,16 @@ func (c *Cluster) writeInstallConfig() error {
 
 func (c *Cluster) runInstaller() error {
 	installerPath := fmt.Sprintf("%s/%s", c.Dir, "bin/openshift-install")
+	if c.opts.installerPath != "" {
+		if err := os.Remove(installerPath); err != nil {
+			return err
+		}
+		err := os.Symlink(c.opts.installerPath, installerPath)
+		if err != nil {
+			return err
+		}
+	}
+
 	args := []string{"create", "cluster", "--dir", c.Dir, "--log-level", c.LogLevel}
 
 	cmd := exec.Command(installerPath, args...)
