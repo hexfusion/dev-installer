@@ -1,7 +1,6 @@
 # dev-installer
 tooling for creating and managing OCP 4 clusters
 
-
 #### CI images require you to be logged in to ci via `oc login`
 
 ```bash
@@ -22,5 +21,18 @@ bin/dev-installer cluster \
   -t custom \
   -s ~/.ssh/libra.pub \
   --pull-secret=/home/remote/sbatsche/.PULL_SECRET_BUILD \
+  -n test-cluster
+  ```
+
+#### libvirt requires a precompiled installer with libvirt support
+
+```bash
+./bin/dev-installer cluster \
+  -p libvirt \
+  -r docker.io/hexfusion/origin-release:v4.4 \
+  -t custom \
+  -s ~/.ssh/libra.pub \
+  --pull-secret=/home/remote/sbatsche/.PULL_SECRET_BUILD \
+  --installer-path=/home/remote/sbatsche/projects/openshift/installer/bin/openshift-install \
   -n test-cluster
   ```
