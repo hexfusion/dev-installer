@@ -385,6 +385,12 @@ func (c *Cluster) runInstaller() error {
 	args := []string{"create", "cluster", "--dir", c.Dir, "--log-level", c.LogLevel}
 
 	cmd := exec.Command(installerPath, args...)
+	if c.opts.releaseImageType == "custom" {
+		cmd.Env = append(os.Environ(),
+			fmt.Sprintf("OPENSHIFT_INSTALL_RELEASE_IMAGE_OVERRIDE=%s", c.opts.releaseImage),
+		)
+	}
+
 	if runtime.GOOS == "windows" {
 		cmd = exec.Command("tasklist")
 	}
