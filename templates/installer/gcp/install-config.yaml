@@ -24,7 +24,7 @@ networking:
 platform:
   gcp:
     projectID: openshift-gce-devel
-    region: us-east1
+    region: {{ .ProviderRegion }}
 pullSecret: '{{ .PullSecret }}'
 sshKey: |
   {{ .SSHKey }}
