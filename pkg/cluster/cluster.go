@@ -35,6 +35,7 @@ import (
 type clusterOpts struct {
 	errOut io.Writer
 	provider string
+	providerRegion string
 	pullSecret string
 	releaseImage string
 	releaseImageType string
@@ -86,6 +87,7 @@ func NewClusterCommand(errOut io.Writer) *cobra.Command {
 func (c *clusterOpts) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVarP(&c.name, "name", "n", c.name, "cluster name")
 	fs.StringVarP(&c.provider, "provider", "p", c.provider, "cluster provider")
+	fs.StringVar(&c.providerRegion, "provider-region", c.providerRegion, "region to use for the given provider")
 	fs.StringVarP(&c.pullSecret, "pull-secret", "a", c.pullSecret, "pull secret to use for cluster creation")
 	fs.StringVarP(&c.releaseImage, "release", "r", c.releaseImage, "release image")
 	fs.StringVarP(&c.releaseImageType, "release-type", "t", c.releaseImageType, "the type of release image used. Example CI, Nightly, Custom")
@@ -142,6 +144,7 @@ type TemplateData struct {
 	WorkerReplicas int
 	MasterReplicas int
 	LogLevel string
+	ProviderRegion string
 }
 
 //type Auths struct {
@@ -191,9 +194,7 @@ func newCluster(opts *clusterOpts) (*Cluster, error) {
 		},
 	}
 
-	//if err := cluster.setPullSecret(); err != nil {
-	//	return nil, err
-	//}
+	cluster.setProviderRegion()
 
 	if opts.releaseImageType == "ci" && opts.pullSecret == "" {
 		if err := cluster.setPullSecretCI(); err != nil {
@@ -201,6 +202,7 @@ func newCluster(opts *clusterOpts) (*Cluster, error) {
 		}
 	}
 
+	//TODO make func
 	if opts.pullSecret != "" {
 		destinationFile := fmt.Sprintf("%s/%s", cluster.Dir, "CI_PULL_SECRET")
 		raw, err := ioutil.ReadFile(opts.pullSecret)
@@ -275,7 +277,23 @@ func (c *Cluster) setPullSecret() error {
   //  c.PullSecrets = r.AccessToken
 	return nil
 }
+func (c *Cluster) setProviderRegion() {
+	var region string
 
+	//defaults
+	//TODO move to config
+	switch c.opts.provider {
+	case "aws":
+		region = "us-east-1"
+	case "gcp":
+		region = "us-east1"
+	}
+
+	if c.opts.providerRegion != "" {
+		region = c.opts.providerRegion
+	}
+	c.TemplateData.ProviderRegion = region
+}
 func (c *Cluster) setPullSecretCI() error {
 	kubeConfigFlags := genericclioptions.NewConfigFlags(true)
 	matchVersionKubeConfigFlags := kcmdutil.NewMatchVersionFlags(kubeConfigFlags)
