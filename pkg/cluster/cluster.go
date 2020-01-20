@@ -123,9 +123,6 @@ func (c *clusterOpts) Validate() error {
 	if len(c.sshKeyPath) == 0 {
 		return errors.New("missing required flag: --ssh-path -s")
 	}
-	if len(c.name) == 0 {
-		return errors.New("missing required flag: --name -n")
-	}
 	return nil
 }
 
@@ -188,6 +185,10 @@ func newCluster(opts *clusterOpts) (*Cluster, error) {
 	//if err != nil {
 	//	return nil, err
 	//}
+
+	if opts.name == "" {
+		opts.name = t.Format("0102150405")
+	}
 
 	clusterName := fmt.Sprintf("%s-%s-%s", user.Username, opts.name, date)
 	sshKey, err := ioutil.ReadFile(opts.sshKeyPath)
@@ -620,7 +621,6 @@ func (c *Cluster) runInstaller() error {
 	}()
 
 	stderr, errStderr = copyAndCapture(os.Stderr, stderrIn)
-
 	wg.Wait()
 
 	err = cmd.Wait()
