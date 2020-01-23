@@ -287,6 +287,8 @@ func (c *Cluster) setProviderRegion() {
 		region = "us-east-1"
 	case "gcp":
 		region = "us-east1"
+	case "azure":
+		region = "eastus"
 	}
 
 	if c.opts.providerRegion != "" {
