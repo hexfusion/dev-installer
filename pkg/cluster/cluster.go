@@ -40,7 +40,7 @@ type clusterOpts struct {
 	releaseImage string
 	releaseImageType string
 	installerPath string
-	keepBootstrap string
+	keepBootstrap bool
 	baseDir string
 	name string
 	pullSecretName string
@@ -49,6 +49,7 @@ type clusterOpts struct {
 
 const (
 	cloudRedHatTokenUrl = "https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token"
+	openShiftInstallerUrl = "https://github.com/openshift/installer.git"
     )
 
 // NewClusterCommand creates a new cluster
@@ -94,7 +95,7 @@ func (c *clusterOpts) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&c.installerPath, "installer-path", c.installerPath, "path of the compiled installer to use")
 	fs.StringVar(&c.baseDir, "base-dir", c.baseDir, "path of the base dir to store cluster data")
 	fs.StringVarP(&c.sshKeyPath, "ssh-path", "s", c.sshKeyPath, "path to public ssh key for cluster")
-	//fs.StringVar(&c.keepBootstrap, "keep-bootstrap", r.keepBootstrap, "keep boostrap node around for debug")
+	fs.BoolVarP(&c.keepBootstrap, "keep-bootstrap", "k", c.keepBootstrap, "keep boostrap node around for debug")
 }
 
 // Validate verifies the inputs.
@@ -179,7 +180,7 @@ func newCluster(opts *clusterOpts) (*Cluster, error) {
 	}
 
 	dir := fmt.Sprintf("%s/%s/%s/%s-%s", opts.baseDir, opts.provider, date, opts.name, t.Format("15_04_05"))
-	fmt.Printf("Building cluster in %s", dir)
+	fmt.Printf("Building cluster in %s\n", dir)
 	os.MkdirAll(dir, os.ModePerm)
 	cluster := Cluster{
 		opts: opts,
@@ -234,6 +235,20 @@ func (c *clusterOpts) Run() error {
 	//extract installer from release image.
 	if err := cluster.extractInstaller(); err != nil {
 		return err
+	}
+
+	if cluster.opts.keepBootstrap {
+		if err := cluster.initCustomInstaller(); err != nil {
+			return err
+		}
+
+		if err := cluster.patchCustomInstaller(); err != nil {
+			return err
+		}
+
+		if err := cluster.buildInstallCustomInstaller();err != nil {
+			return err
+		}
 	}
 
 	// populate install-config.
@@ -347,6 +362,104 @@ func (c *Cluster) extractInstaller() error {
 		return err
 	}
 	return nil
+}
+
+func (c *Cluster) initCustomInstaller() error {
+	gitPath := fmt.Sprintf("%s/src/github.com/openshift/installer", c.Dir)
+	args := []string{"clone", openShiftInstallerUrl, gitPath}
+	if _, err := exec.Command("git", args...).Output(); err != nil {
+		return err
+	}
+
+	commit, err := extractInstallerCommmit(c.Dir)
+	if err != nil {
+		return err
+	}
+	cmd := fmt.Sprintf("cd %s ;git checkout %s" ,gitPath, commit)
+	if _, err := exec.Command("bash","-c",cmd).Output(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (c *Cluster) patchCustomInstaller() error {
+	f, err := os.Create(fmt.Sprintf("%s/src/github.com/openshift/installer/patch", c.Dir))
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, err := f.WriteString(keepBootstrapPatch);err != nil {
+		return err
+	}
+
+	//TODO tried git-go but really wasn't working well maybe revist?
+	args := []string{"apply", "--reject", "--whitespace=fix", "patch"}
+
+	cmd := exec.Command("git", args...)
+	cmd.Dir = fmt.Sprintf("%s/src/github.com/openshift/installer", c.Dir)
+	stdout, err := cmd.Output()
+	if err != nil {
+		return  err
+	}
+
+	fmt.Printf("patching installer\n%s",stdout)
+
+	return nil
+}
+
+func (c *Cluster) buildInstallCustomInstaller() error  {
+	args := []string{""}
+	cmd := exec.Command(fmt.Sprintf("%s/src/github.com/openshift/installer/hack/build.sh", c.Dir), args...)
+	cmd.Env = append(os.Environ(),
+		fmt.Sprintf("GOPATH=%s", c.Dir),
+		"GO111MODULE=off",
+		fmt.Sprintf("OUTPUT=%s/bin",c.Dir),
+	)
+
+	//TODO create func
+	var stdout, stderr []byte
+	var errStdout, errStderr error
+	stdoutIn, _ := cmd.StdoutPipe()
+	stderrIn, _ := cmd.StderrPipe()
+	err := cmd.Start()
+	if err != nil {
+		return fmt.Errorf("cmd.Start() failed with '%s'\n", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		stdout, errStdout = copyAndCapture(os.Stdout, stdoutIn)
+		wg.Done()
+	}()
+
+	stderr, errStderr = copyAndCapture(os.Stderr, stderrIn)
+
+	wg.Wait()
+
+	err = cmd.Wait()
+	if err != nil {
+		return fmt.Errorf("cmd.Run() failed with %s\n", err)
+	}
+	if errStdout != nil || errStderr != nil {
+		return fmt.Errorf("failed to capture stdout or stderr\n")
+	}
+	outStr, errStr := string(stdout), string(stderr)
+	fmt.Printf("\nout:\n%s\nerr:\n%s\n", outStr, errStr)
+
+	return err
+}
+
+
+func extractInstallerCommmit(dir string) (string, error) {
+	installerPath := fmt.Sprintf("%s/%s", dir, "bin/openshift-install")
+	cmd := fmt.Sprintf("%s version 2> /dev/null | grep commit | awk '{ print $4 }'" ,installerPath)
+	stdout, err := exec.Command("bash","-c",cmd).Output()
+	if err != nil {
+		return "", err
+	}
+	return string(stdout), nil
 }
 
 func getConfigFile() (config.File, error) {
@@ -467,3 +580,31 @@ func copyAndCapture(w io.Writer, r io.Reader) ([]byte, error) {
 		}
 	}
 }
+
+
+//TODO move to bindata
+var keepBootstrapPatch =`diff --git a/cmd/openshift-install/create.go b/cmd/openshift-install/create.go
+--- a/cmd/openshift-install/create.go
++++ b/cmd/openshift-install/create.go
+@@ -30,7 +30,6 @@ import (
+ 	"github.com/openshift/installer/pkg/asset"
+ 	assetstore "github.com/openshift/installer/pkg/asset/store"
+ 	targetassets "github.com/openshift/installer/pkg/asset/targets"
+-	destroybootstrap "github.com/openshift/installer/pkg/destroy/bootstrap"
+ 	cov1helpers "github.com/openshift/library-go/pkg/config/clusteroperator/v1helpers"
+ )
+ 
+@@ -105,12 +104,6 @@ var (
+ 					logrus.Fatal("Bootstrap failed to complete: ", err)
+ 				}
+ 
+-				logrus.Info("Destroying the bootstrap resources...")
+-				err = destroybootstrap.Destroy(rootOpts.dir)
+-				if err != nil {
+-					logrus.Fatal(err)
+-				}
+-
+ 				err = waitForInstallComplete(ctx, config, rootOpts.dir)
+ 				if err != nil {
+ 					if err2 := logClusterOperatorConditions(ctx, config); err2 != nil {
+`
