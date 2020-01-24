@@ -326,20 +326,20 @@ func (c *Cluster) setPullSecretCI() error {
 	}
 
 	if err := o.Complete(f, []string{""}); err != nil {
-		return err
+		return fmt.Errorf("setPullSecretCI() %s",err)
 	}
 	if err := o.Run(); err != nil {
-		return err
+		return fmt.Errorf("setPullSecretCI() %s",err)
 	}
 
 	raw, err := ioutil.ReadFile(pullPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("setPullSecretCI() %s",err)
 	}
 
 	pullSecret := new(bytes.Buffer)
 	if err := json.Compact(pullSecret, raw);err != nil {
-		return err
+		return fmt.Errorf("setPullSecretCI() %s",err)
 	}
 	c.TemplateData.PullSecret = pullSecret.String()
 
@@ -370,16 +370,19 @@ func (c *Cluster) initCustomInstaller() error {
 	gitPath := fmt.Sprintf("%s/src/github.com/openshift/installer", c.Dir)
 	args := []string{"clone", openShiftInstallerUrl, gitPath}
 	if _, err := exec.Command("git", args...).Output(); err != nil {
-		return err
+		return fmt.Errorf("initCustomInstaller() %s",err)
 	}
 
 	commit, err := extractInstallerCommmit(c.Dir)
 	if err != nil {
-		return err
+		return fmt.Errorf("initCustomInstaller() %s",err)
 	}
+
+	fmt.Printf("Checking out installer commit %s",commit)
+
 	cmd := fmt.Sprintf("cd %s ;git checkout %s" ,gitPath, commit)
 	if _, err := exec.Command("bash","-c",cmd).Output(); err != nil {
-		return err
+		fmt.Printf("installer commit %s not found using master", commit)
 	}
 
 	return nil
@@ -392,7 +395,7 @@ func (c *Cluster) patchCustomInstaller() error {
 	}
 	defer f.Close()
 	if _, err := f.WriteString(keepBootstrapPatch);err != nil {
-		return err
+		return fmt.Errorf("patchCustomInstaller() %s",err)
 	}
 
 	//TODO tried git-go but really wasn't working well maybe revist?
@@ -402,7 +405,7 @@ func (c *Cluster) patchCustomInstaller() error {
 	cmd.Dir = fmt.Sprintf("%s/src/github.com/openshift/installer", c.Dir)
 	stdout, err := cmd.Output()
 	if err != nil {
-		return  err
+		return fmt.Errorf("patchCustomInstaller() %s",err)
 	}
 
 	fmt.Printf("patching installer\n%s",stdout)
@@ -459,7 +462,7 @@ func extractInstallerCommmit(dir string) (string, error) {
 	cmd := fmt.Sprintf("%s version 2> /dev/null | grep commit | awk '{ print $4 }'" ,installerPath)
 	stdout, err := exec.Command("bash","-c",cmd).Output()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("extractInstallerCommmit() failed with %s\n", err)
 	}
 	return string(stdout), nil
 }
@@ -487,18 +490,18 @@ func (c *Cluster) writeInstallConfig() error {
 	tpl, err := template.ParseFiles(fmt.Sprintf("./templates/installer/%s/%s", c.opts.provider, "install-config.yaml"))
 
 	if err != nil {
-		return err
+		return fmt.Errorf("writeInstallConfig() failed with %s\n", err)
 	}
 
 	out, err := os.Create(fmt.Sprintf("%s/%s", c.Dir, "install-config.yaml"))
 	if err != nil {
-		return err
+		return fmt.Errorf("writeInstallConfig() failed with %s\n", err)
 	}
 	defer out.Close()
 
 	err = tpl.Execute(out, c.TemplateData)
 	if err != nil {
-		return err
+		return fmt.Errorf("writeInstallConfig() failed with %s\n", err)
 	}
 	return nil
 }
@@ -507,18 +510,18 @@ func (c *Cluster) runInstaller() error {
 	installerPath := fmt.Sprintf("%s/%s", c.Dir, "bin/openshift-install")
 	if c.opts.installerPath != "" {
 		if err := os.Remove(installerPath); err != nil {
-			return err
+			return fmt.Errorf("runInstaller() failed with %s\n", err)
 		}
 		err := os.Symlink(c.opts.installerPath, installerPath)
 		if err != nil {
-			return err
+			return fmt.Errorf("runInstaller() failed with %s\n", err)
 		}
 	}
 
 	args := []string{"create", "cluster", "--dir", c.Dir, "--log-level", c.LogLevel}
 
 	cmd := exec.Command(installerPath, args...)
-	if c.opts.releaseImageType == "custom" {
+	if c.opts.releaseImage != "" {
 		cmd.Env = append(os.Environ(),
 			fmt.Sprintf("OPENSHIFT_INSTALL_RELEASE_IMAGE_OVERRIDE=%s", c.opts.releaseImage),
 		)
