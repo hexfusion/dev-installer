@@ -1,7 +1,19 @@
 # dev-installer
 tooling for creating and managing OCP 4 clusters
 
-#### CI images require you to be logged in to ci via `oc login`
+### CI images require you to be logged in to ci via `oc login`
+
+##### create cluster based on CI generated release image and patch installer to keep bootstrap node with --keep-bootstrap flag.
+
+```bash
+./bin/dev-installer cluster \
+  -p gcp \
+  -r registry.svc.ci.openshift.org/ci-op-z0qywyr4/release:latest \
+  -t ci \
+  -s ~/.ssh/libra.pub \
+  --keep-bootstrap \
+  -n fix-operator-1
+```
 
 ```bash
 bin/dev-installer cluster \
@@ -24,7 +36,7 @@ bin/dev-installer cluster \
   -n test-cluster
   ```
 
-#### libvirt requires a precompiled installer with libvirt support
+#### libvirt requires a precompiled installer with libvirt support pass that with --installer-path
 
 ```bash
 ./bin/dev-installer cluster \
