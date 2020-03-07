@@ -4,12 +4,12 @@ compute:
 - hyperthreading: Enabled
   name: worker
   platform: {}
-  replicas: 3
+  replicas: {{ .WorkerReplicas }}
 controlPlane:
   hyperthreading: Enabled
   name: master
   platform: {}
-  replicas: 3
+  replicas: {{ .MasterReplicas }}
 metadata:
   creationTimestamp: null
   name: {{ .ClusterName }}

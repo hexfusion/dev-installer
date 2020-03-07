@@ -4,23 +4,24 @@ compute:
 - hyperthreading: Enabled
   name: worker
   platform: {}
-  replicas: 3
+  replicas: {{ .WorkerReplicas }}
 controlPlane:
   hyperthreading: Enabled
   name: master
   platform: {}
-  replicas: 3
+  replicas: {{ .MasterReplicas }}
 metadata:
   creationTimestamp: null
   name: {{ .ClusterName }}
 networking:
   clusterNetwork:
-  - cidr: 10.128.0.0/14
-    hostPrefix: 23
-  machineCIDR: 10.0.0.0/16
-  networkType: OpenShiftSDN
+  - cidr: {{ .ClusterCidr }}
+    hostPrefix: {{ .ClusterCidrHostPrefix }}
+  machineNetwork: {{range .MachineCidr}}
+  - cidr: {{.}}{{end}}
+  networkType: {{ .NetworkType }}
   serviceNetwork:
-  - 172.30.0.0/16
+  - {{ .ServiceCidr }}
 platform:
   azure:
     baseDomainResourceGroupName: os4-common

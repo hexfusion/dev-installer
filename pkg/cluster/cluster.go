@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"io/ioutil"
-	"k8s.io/klog"
 	"net/http"
 	"net/url"
 	"os"
@@ -17,6 +16,8 @@ import (
 	"sync"
 	"text/template"
 	"time"
+
+	"k8s.io/klog"
 
 	"github.com/hexfusion/dev-installer/pkg/cluster/admin/release"
 	"github.com/hexfusion/dev-installer/pkg/cluster/config"
@@ -30,27 +31,30 @@ import (
 	kcmdutil "k8s.io/kubectl/pkg/cmd/util"
 )
 
-
 // clusterOpts holds values to drive the cluster command.
 type clusterOpts struct {
-	errOut io.Writer
-	provider string
-	providerRegion string
-	pullSecret string
-	releaseImage string
+	errOut           io.Writer
+	provider         string
+	providerRegion   string
+	pullSecret       string
+	releaseImage     string
 	releaseImageType string
-	installerPath string
-	keepBootstrap bool
-	baseDir string
-	name string
-	pullSecretName string
-	sshKeyPath string
+	installerPath    string
+	keepBootstrap    bool
+	baseDir          string
+	name             string
+	pullSecretName   string
+	sshKeyPath       string
+	singleStackIpv6  bool
+	replicasMaster   string
+	replicasWorker   string
+	libvirtURI       string
 }
 
 const (
-	cloudRedHatTokenUrl = "https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token"
+	cloudRedHatTokenUrl   = "https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token"
 	openShiftInstallerUrl = "https://github.com/openshift/installer.git"
-    )
+)
 
 // NewClusterCommand creates a new cluster
 func NewClusterCommand(errOut io.Writer) *cobra.Command {
@@ -59,9 +63,11 @@ func NewClusterCommand(errOut io.Writer) *cobra.Command {
 		klog.Fatal(err)
 	}
 
+	// defaults
 	clusterOpts := clusterOpts{
-		errOut:   errOut,
-		baseDir: fmt.Sprintf("%s/clusters",homeDir),
+		errOut:     errOut,
+		baseDir:    fmt.Sprintf("%s/clusters", homeDir),
+		libvirtURI: "qemu+tcp://192.168.122.1/system",
 	}
 	cmd := &cobra.Command{
 		Use:   "cluster",
@@ -96,6 +102,10 @@ func (c *clusterOpts) AddFlags(fs *pflag.FlagSet) {
 	fs.StringVar(&c.baseDir, "base-dir", c.baseDir, "path of the base dir to store cluster data")
 	fs.StringVarP(&c.sshKeyPath, "ssh-path", "s", c.sshKeyPath, "path to public ssh key for cluster")
 	fs.BoolVarP(&c.keepBootstrap, "keep-bootstrap", "k", c.keepBootstrap, "keep boostrap node around for debug")
+	fs.BoolVar(&c.singleStackIpv6, "single-stack-ipv6", c.singleStackIpv6, "single stack IPV6, default false (IPv4)")
+	fs.StringVarP(&c.replicasMaster, "replicas-master", "m", c.replicasMaster, "number of master compute replicas")
+	fs.StringVarP(&c.replicasWorker, "replicas-worker", "w", c.replicasWorker, "number of worker compute replicas")
+	fs.StringVar(&c.libvirtURI, "libvirt-uri", c.libvirtURI, "URI for libvirt instance")
 }
 
 // Validate verifies the inputs.
@@ -120,32 +130,38 @@ func (c *clusterOpts) Validate() error {
 }
 
 type Auth struct {
-	Type string
+	Type     string
 	FileName string
 }
 
 type Cluster struct {
-	opts *clusterOpts
+	opts        *clusterOpts
 	PullSecrets []Auth
-	Dir string
+	Dir         string
 	TemplateData
 	Config config.File
 }
 
 type RedHatCloud struct {
 	AccessToken string `json:"access_token"`
-	ExpiresIn int `json:"expires_in"`
-	Created string
+	ExpiresIn   int    `json:"expires_in"`
+	Created     string
 }
 
 type TemplateData struct {
-	SSHKey string
-	PullSecret string
-	ClusterName string
-	WorkerReplicas int
-	MasterReplicas int
-	LogLevel string
-	ProviderRegion string
+	SSHKey                string
+	PullSecret            string
+	ClusterName           string
+	WorkerReplicas        string
+	MasterReplicas        string
+	LogLevel              string
+	ProviderRegion        string
+	ClusterCidr           string
+	ClusterCidrHostPrefix int
+	MachineCidr           []string
+	ServiceCidr           string
+	NetworkType           string
+	LibvirtURI            string
 }
 
 //type Auths struct {
@@ -173,7 +189,7 @@ func newCluster(opts *clusterOpts) (*Cluster, error) {
 	//	return nil, err
 	//}
 
-	clusterName := fmt.Sprintf("%s-%s-%s",  user.Username, opts.name, date)
+	clusterName := fmt.Sprintf("%s-%s-%s", user.Username, opts.name, date)
 	sshKey, err := ioutil.ReadFile(opts.sshKeyPath)
 	if err != nil {
 		return nil, err
@@ -182,20 +198,21 @@ func newCluster(opts *clusterOpts) (*Cluster, error) {
 	dir := fmt.Sprintf("%s/%s/%s/%s-%s", opts.baseDir, opts.provider, date, opts.name, t.Format("15_04_05"))
 	fmt.Printf("Building cluster in %s\n", dir)
 	os.MkdirAll(dir, os.ModePerm)
+
 	cluster := Cluster{
 		opts: opts,
-		Dir: dir,
+		Dir:  dir,
 		//Config: confFile,
 		TemplateData: TemplateData{
 			ClusterName: clusterName,
-			SSHKey: string(sshKey),
-			WorkerReplicas: 3,
-			MasterReplicas: 3,
-			LogLevel: "debug",
+			SSHKey:      string(sshKey),
+			LogLevel:    "debug",
 		},
 	}
 
+	cluster.setComputeReplicas()
 	cluster.setProviderRegion()
+	cluster.setNetworkCidrs()
 
 	if opts.releaseImageType == "ci" && opts.pullSecret == "" {
 		if err := cluster.setPullSecretCI(); err != nil {
@@ -216,7 +233,7 @@ func newCluster(opts *clusterOpts) (*Cluster, error) {
 		}
 
 		pullSecret := new(bytes.Buffer)
-		if err := json.Compact(pullSecret, raw);err != nil {
+		if err := json.Compact(pullSecret, raw); err != nil {
 			return nil, err
 		}
 		cluster.TemplateData.PullSecret = pullSecret.String()
@@ -246,7 +263,7 @@ func (c *clusterOpts) Run() error {
 			return err
 		}
 
-		if err := cluster.buildInstallCustomInstaller();err != nil {
+		if err := cluster.buildInstallCustomInstaller(); err != nil {
 			return err
 		}
 	}
@@ -257,14 +274,69 @@ func (c *clusterOpts) Run() error {
 	}
 
 	//build cluster.
-	if err :=  cluster.runInstaller(); err != nil {
+	if err := cluster.runInstaller(); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-// TODo Fix me
+func (c *Cluster) setNetworkCidrs() {
+	var (
+		clusterCidr           string
+		clusterCidrHostPrefix int
+		machineCidr           []string
+		serviceCidr           string
+		networkType           string
+	)
+
+	switch c.opts.provider {
+	case "azure":
+		if c.opts.singleStackIpv6 {
+			clusterCidr = "fd01::/48"
+			clusterCidrHostPrefix = 64
+			machineCidr = []string{"10.0.0.0/16", "fc00::/48"}
+			serviceCidr = "fd02::/112"
+			networkType = "OVNKubernetes"
+		} else {
+			clusterCidr = "10.128.0.0/14"
+			clusterCidrHostPrefix = 23
+			machineCidr = []string{"10.0.0.0/16"}
+			serviceCidr = "172.30.0.0/16"
+			networkType = "OpenShiftSDN"
+		}
+	case "gcp":
+	case "aws":
+	}
+	c.TemplateData.ClusterCidr = clusterCidr
+	c.TemplateData.ClusterCidrHostPrefix = clusterCidrHostPrefix
+	c.TemplateData.MachineCidr = machineCidr
+	c.TemplateData.ServiceCidr = serviceCidr
+	c.TemplateData.NetworkType = networkType
+}
+
+func (c *Cluster) setComputeReplicas() {
+	// defaults
+	masters := "3"
+	workers := "3"
+
+	switch c.opts.provider {
+	case "libvirt":
+		masters = "1"
+		workers = "1"
+	}
+
+	if c.opts.replicasMaster != "" {
+		masters = c.opts.replicasMaster
+	}
+	if c.opts.replicasWorker != "" {
+		workers = c.opts.replicasWorker
+	}
+	c.TemplateData.WorkerReplicas = workers
+	c.TemplateData.MasterReplicas = masters
+}
+
+// TODO fix me
 func (c *Cluster) setPullSecret() error {
 	var cloudRedHatToken string
 
@@ -283,20 +355,20 @@ func (c *Cluster) setPullSecret() error {
 	var r RedHatCloud
 	res, err := http.PostForm(cloudRedHatTokenUrl,
 		url.Values{"grant_type": {"refresh_token"}, "client_id": {"cloud-services"}, "refresh_token": {cloudRedHatToken}})
-	if  err != nil {
+	if err != nil {
 		return err
 	}
-	if err := json.NewDecoder(res.Body).Decode(&r);err != nil {
+	if err := json.NewDecoder(res.Body).Decode(&r); err != nil {
 		return err
 	}
-  //  c.PullSecrets = r.AccessToken
+	//  c.PullSecrets = r.AccessToken
 	return nil
 }
 func (c *Cluster) setProviderRegion() {
 	var region string
 
 	//defaults
-	//TODO move to config
+	//TODO allow override in config
 	switch c.opts.provider {
 	case "aws":
 		region = "us-east-1"
@@ -326,20 +398,20 @@ func (c *Cluster) setPullSecretCI() error {
 	}
 
 	if err := o.Complete(f, []string{""}); err != nil {
-		return fmt.Errorf("setPullSecretCI() %s",err)
+		return fmt.Errorf("setPullSecretCI() %s", err)
 	}
 	if err := o.Run(); err != nil {
-		return fmt.Errorf("setPullSecretCI() %s",err)
+		return fmt.Errorf("setPullSecretCI() %s", err)
 	}
 
 	raw, err := ioutil.ReadFile(pullPath)
 	if err != nil {
-		return fmt.Errorf("setPullSecretCI() %s",err)
+		return fmt.Errorf("setPullSecretCI() %s", err)
 	}
 
 	pullSecret := new(bytes.Buffer)
-	if err := json.Compact(pullSecret, raw);err != nil {
-		return fmt.Errorf("setPullSecretCI() %s",err)
+	if err := json.Compact(pullSecret, raw); err != nil {
+		return fmt.Errorf("setPullSecretCI() %s", err)
 	}
 	c.TemplateData.PullSecret = pullSecret.String()
 
@@ -348,14 +420,14 @@ func (c *Cluster) setPullSecretCI() error {
 
 func (c *Cluster) extractInstaller() error {
 	o := &release.ExtractOptions{
-		Directory: fmt.Sprintf("%s/%s", c.Dir,"bin"),
+		Directory: fmt.Sprintf("%s/%s", c.Dir, "bin"),
 		IOStreams: genericclioptions.IOStreams{
 			In:     os.Stdin,
 			Out:    os.Stdout,
 			ErrOut: os.Stderr,
 		},
 		Command: "openshift-install",
-		From: c.opts.releaseImage,
+		From:    c.opts.releaseImage,
 		SecurityOptions: imagemanifest.SecurityOptions{
 			RegistryConfig: fmt.Sprintf("%s/%s", c.Dir, "CI_PULL_SECRET"),
 		},
@@ -370,18 +442,18 @@ func (c *Cluster) initCustomInstaller() error {
 	gitPath := fmt.Sprintf("%s/src/github.com/openshift/installer", c.Dir)
 	args := []string{"clone", openShiftInstallerUrl, gitPath}
 	if _, err := exec.Command("git", args...).Output(); err != nil {
-		return fmt.Errorf("initCustomInstaller() %s",err)
+		return fmt.Errorf("initCustomInstaller() %s", err)
 	}
 
 	commit, err := extractInstallerCommmit(c.Dir)
 	if err != nil {
-		return fmt.Errorf("initCustomInstaller() %s",err)
+		return fmt.Errorf("initCustomInstaller() %s", err)
 	}
 
-	fmt.Printf("Checking out installer commit %s",commit)
+	fmt.Printf("Checking out installer commit %s", commit)
 
-	cmd := fmt.Sprintf("cd %s ;git checkout %s" ,gitPath, commit)
-	if _, err := exec.Command("bash","-c",cmd).Output(); err != nil {
+	cmd := fmt.Sprintf("cd %s ;git checkout %s", gitPath, commit)
+	if _, err := exec.Command("bash", "-c", cmd).Output(); err != nil {
 		fmt.Printf("installer commit %s not found using master", commit)
 	}
 
@@ -394,8 +466,8 @@ func (c *Cluster) patchCustomInstaller() error {
 		return err
 	}
 	defer f.Close()
-	if _, err := f.WriteString(keepBootstrapPatch);err != nil {
-		return fmt.Errorf("patchCustomInstaller() %s",err)
+	if _, err := f.WriteString(keepBootstrapPatch); err != nil {
+		return fmt.Errorf("patchCustomInstaller() %s", err)
 	}
 
 	//TODO tried git-go but really wasn't working well maybe revist?
@@ -405,21 +477,21 @@ func (c *Cluster) patchCustomInstaller() error {
 	cmd.Dir = fmt.Sprintf("%s/src/github.com/openshift/installer", c.Dir)
 	stdout, err := cmd.Output()
 	if err != nil {
-		return fmt.Errorf("patchCustomInstaller() %s",err)
+		return fmt.Errorf("patchCustomInstaller() %s", err)
 	}
 
-	fmt.Printf("patching installer\n%s",stdout)
+	fmt.Printf("patching installer\n%s", stdout)
 
 	return nil
 }
 
-func (c *Cluster) buildInstallCustomInstaller() error  {
+func (c *Cluster) buildInstallCustomInstaller() error {
 	args := []string{""}
 	cmd := exec.Command(fmt.Sprintf("%s/src/github.com/openshift/installer/hack/build.sh", c.Dir), args...)
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("GOPATH=%s", c.Dir),
 		"GO111MODULE=off",
-		fmt.Sprintf("OUTPUT=%s/bin",c.Dir),
+		fmt.Sprintf("OUTPUT=%s/bin", c.Dir),
 	)
 
 	//TODO create func
@@ -456,11 +528,10 @@ func (c *Cluster) buildInstallCustomInstaller() error  {
 	return err
 }
 
-
 func extractInstallerCommmit(dir string) (string, error) {
 	installerPath := fmt.Sprintf("%s/%s", dir, "bin/openshift-install")
-	cmd := fmt.Sprintf("%s version 2> /dev/null | grep commit | awk '{ print $4 }'" ,installerPath)
-	stdout, err := exec.Command("bash","-c",cmd).Output()
+	cmd := fmt.Sprintf("%s version 2> /dev/null | grep commit | awk '{ print $4 }'", installerPath)
+	stdout, err := exec.Command("bash", "-c", cmd).Output()
 	if err != nil {
 		return "", fmt.Errorf("extractInstallerCommmit() failed with %s\n", err)
 	}
@@ -473,7 +544,7 @@ func getConfigFile() (config.File, error) {
 	if err != nil {
 		return c, err
 	}
-	configPath := fmt.Sprintf("%s/.config/dev-installer/config.yaml",homeDir)
+	configPath := fmt.Sprintf("%s/.config/dev-installer/config.yaml", homeDir)
 	configFile, err := ioutil.ReadFile(configPath)
 	if err != nil {
 		return c, err
@@ -521,11 +592,12 @@ func (c *Cluster) runInstaller() error {
 	args := []string{"create", "cluster", "--dir", c.Dir, "--log-level", c.LogLevel}
 
 	cmd := exec.Command(installerPath, args...)
-	if c.opts.releaseImage != "" {
-		cmd.Env = append(os.Environ(),
-			fmt.Sprintf("OPENSHIFT_INSTALL_RELEASE_IMAGE_OVERRIDE=%s", c.opts.releaseImage),
-		)
-	}
+
+	cmd.Env = append(os.Environ(),
+		fmt.Sprintf("OPENSHIFT_INSTALL_RELEASE_IMAGE_OVERRIDE=%s", c.opts.releaseImage),
+		fmt.Sprintf("OPENSHIFT_INSTALL_AZURE_EMULATE_SINGLESTACK_IPV6=%v", c.opts.singleStackIpv6), //TODO this should be a provider level config
+		fmt.Sprintf("OPENSHIFT_INSTALL_PRESERVE_BOOTSTRAP=%v", c.opts.keepBootstrap),
+	)
 
 	if runtime.GOOS == "windows" {
 		cmd = exec.Command("tasklist")
@@ -586,9 +658,8 @@ func copyAndCapture(w io.Writer, r io.Reader) ([]byte, error) {
 	}
 }
 
-
 //TODO move to bindata
-var keepBootstrapPatch =`diff --git a/cmd/openshift-install/create.go b/cmd/openshift-install/create.go
+var keepBootstrapPatch = `diff --git a/cmd/openshift-install/create.go b/cmd/openshift-install/create.go
 --- a/cmd/openshift-install/create.go
 +++ b/cmd/openshift-install/create.go
 @@ -30,7 +30,6 @@ import (
