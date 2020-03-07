@@ -2,6 +2,7 @@ package cluster
 
 import (
 	"fmt"
+	"os"
 	"io"
 	"io/ioutil"
 	"testing"
@@ -14,7 +15,7 @@ auths:
      email: ""
      auth: "example"
 ssh:
-   - publicKeyPath: "/home/remote/sbatsche/.ssh/libra.pub"
+   - publicKeyPath: "` + os.UserHomeDir() + `/.ssh/libra.pub"
 `
 )
 
@@ -48,7 +49,7 @@ func testCluster(tc *testConfig) {
 		releaseImageType: "ci",
 		baseDir: clusterDir,
 		errOut:           errOut,
-		sshKeyPath:       "/home/remote/sbatsche/.ssh/libra.pub",
+		sshKeyPath:       os.UserHomeDir() + "/.ssh/libra.pub",
 	}
 
 	cluster, err := newCluster(clusterOpts)
