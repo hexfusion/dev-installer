@@ -12,19 +12,22 @@ import (
 	"os"
 	"os/exec"
 	"os/user"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"text/template"
 	"time"
 
 	"k8s.io/klog"
 
+	jsonm "github.com/evanphx/json-patch"
+	"github.com/ghodss/yaml"
 	"github.com/hexfusion/dev-installer/pkg/cluster/admin/release"
 	"github.com/hexfusion/dev-installer/pkg/cluster/config"
 	imagemanifest "github.com/hexfusion/dev-installer/pkg/cluster/image/manifest"
 	"github.com/hexfusion/dev-installer/pkg/cluster/registry"
-
-	"github.com/ghodss/yaml"
+	"github.com/hexfusion/dev-installer/pkg/template_assets"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
@@ -49,11 +52,14 @@ type clusterOpts struct {
 	replicasMaster   string
 	replicasWorker   string
 	libvirtURI       string
+	ocpVersion       string
 }
 
 const (
-	cloudRedHatTokenUrl   = "https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token"
-	openShiftInstallerUrl = "https://github.com/openshift/installer.git"
+	// refresh details https://cloud.redhat.com/beta/openshift/token
+	cloudRedHatTokenUrl       = "https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token"
+	cloudRedHatAccessTokenUrl = "https://api.openshift.com/api/accounts_mgmt/v1/access_token"
+	openShiftInstallerUrl     = "https://github.com/openshift/installer.git"
 )
 
 // NewClusterCommand creates a new cluster
@@ -105,6 +111,7 @@ func (c *clusterOpts) AddFlags(fs *pflag.FlagSet) {
 	fs.BoolVar(&c.singleStackIpv6, "single-stack-ipv6", c.singleStackIpv6, "single stack IPV6, default false (IPv4)")
 	fs.StringVarP(&c.replicasMaster, "replicas-master", "m", c.replicasMaster, "number of master compute replicas")
 	fs.StringVarP(&c.replicasWorker, "replicas-worker", "w", c.replicasWorker, "number of worker compute replicas")
+	fs.StringVar(&c.ocpVersion, "version", c.ocpVersion, "ocp version used to generate releaseImage")
 	fs.StringVar(&c.libvirtURI, "libvirt-uri", c.libvirtURI, "URI for libvirt instance")
 }
 
@@ -116,12 +123,18 @@ func (c *clusterOpts) Validate() error {
 	if len(c.releaseImage) == 0 {
 		return errors.New("missing required flag: --release -r")
 	}
-	//TODO parse from image name
 	if len(c.releaseImageType) == 0 {
-		return errors.New("missing required flag: --release-type -rt")
+		return errors.New("missing required flag: --release-type -t")
 	}
+	if c.releaseImageType == "release" && c.releaseImageType != "nightly" {
+		return errors.New("invalid combination: --release flag with release value must use --release-type: nightly")
+	}
+
 	if len(c.sshKeyPath) == 0 {
 		return errors.New("missing required flag: --ssh-path -s")
+	}
+	if c.releaseImage == "latest" && c.ocpVersion == "" {
+		return errors.New("`latest` release requires: --version")
 	}
 	return nil
 }
@@ -133,7 +146,7 @@ type Auth struct {
 
 type Cluster struct {
 	opts        *clusterOpts
-	PullSecrets []Auth
+	PullSecrets []string
 	Dir         string
 	TemplateData
 	Config config.File
@@ -161,17 +174,19 @@ type TemplateData struct {
 	LibvirtURI            string
 }
 
-//type Auths struct {
-//	CloudOpenshift AuthContent `json:"registry.connect.redhat.com"`
-//	Quay AuthContent `json:"quay.io"`
-//	RegistryConnectRedhat AuthContent `json:"registry.connect.redhat.com"`
-//	RegistryRedhat AuthContent `json:"registry.redhat.io"`
-//}
-//
-//type AuthContent struct {
-//	Auth string `json:"email"`
-//	Email string `json:"auth"`
-//}
+type releaseStream struct {
+	Name        string `json:"name"`
+	Phase       string `json:"phase"`
+	PullSpec    string `json:"pullSpec"`
+	DownloadUrl string `json:"downloadURL"`
+}
+
+type releasePayLoad struct {
+	Nodes []struct {
+		Version string `json:"version"`
+		Payload string `json:"payload"`
+	} `json:"nodes"`
+}
 
 func newCluster(opts *clusterOpts) (*Cluster, error) {
 	t := time.Now()
@@ -180,11 +195,6 @@ func newCluster(opts *clusterOpts) (*Cluster, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	//confFile, err := getConfigFile()
-	//if err != nil {
-	//	return nil, err
-	//}
 
 	if opts.name == "" {
 		opts.name = t.Format("0102150405")
@@ -196,7 +206,7 @@ func newCluster(opts *clusterOpts) (*Cluster, error) {
 		return nil, err
 	}
 
-	dir := fmt.Sprintf("%s/%s/%s/%s-%s", opts.baseDir, opts.provider, date, opts.name, t.Format("15_04_05"))
+	dir := filepath.Join(opts.baseDir, opts.provider, date, opts.name, t.Format("15_04_05"))
 	fmt.Printf("Building cluster in %s\n", dir)
 	os.MkdirAll(dir, os.ModePerm)
 
@@ -215,31 +225,56 @@ func newCluster(opts *clusterOpts) (*Cluster, error) {
 	cluster.setProviderRegion()
 	cluster.setNetworkCidrs()
 
-	if opts.releaseImageType == "ci" && opts.pullSecret == "" {
+	// set release image to latest
+	if opts.releaseImage == "latest" {
+		var minorVersion string
+		v := strings.Split(opts.ocpVersion, ".")
+		switch {
+		case len(v) == 2: // 4.8
+			minorVersion = opts.ocpVersion
+		case len(v) == 3: // 4.8.1
+			minorVersion = fmt.Sprintf("%s.%s", v[0], v[1])
+		}
+		latest, err := getLatest(opts.releaseImageType, minorVersion)
+		if err != nil {
+			return nil, err
+		}
+		fmt.Printf("setting release image to %s latest %s: %s", minorVersion, opts.releaseImageType, latest)
+		opts.releaseImage = latest
+	}
+
+	// set release image to release version
+	if opts.releaseImage == "release" {
+		if len(strings.Split(opts.ocpVersion, ".")) != 3 { // 4.8.1
+			return nil, fmt.Errorf("release flag with release value must have full version ex: 4.8.1: %s", opts.ocpVersion)
+		}
+		release, err := getReleaseByVersion(opts.ocpVersion)
+		if err != nil {
+			return nil, err
+		}
+		fmt.Printf("setting release %q image to: %q", opts.ocpVersion, release)
+		opts.releaseImage = release
+	}
+
+	if opts.pullSecret == "" {
 		if err := cluster.setPullSecretCI(); err != nil {
 			return nil, err
 		}
+		if err := cluster.setPullSecretCloud(); err != nil {
+			return nil, err
+		}
+		if err := cluster.setPullSecretDocker(); err != nil {
+			return nil, err
+		}
 	}
 
-	//TODO make func
-	if opts.pullSecret != "" {
-		destinationFile := fmt.Sprintf("%s/%s", cluster.Dir, "CI_PULL_SECRET")
-		raw, err := ioutil.ReadFile(opts.pullSecret)
-		if err != nil {
-			return nil, err
-		}
-		err = ioutil.WriteFile(destinationFile, raw, 0644)
-		if err != nil {
-			return nil, err
-		}
-
-		pullSecret := new(bytes.Buffer)
-		if err := json.Compact(pullSecret, raw); err != nil {
-			return nil, err
-		}
-		cluster.TemplateData.PullSecret = pullSecret.String()
+	if err := cluster.setPullSecret(); err != nil {
+		return nil, err
 	}
 
+	if os.Getenv("OPENSHIFT_INSTALL_KEEP_BOOTSTRAP_RESOURCES") != "" {
+		opts.keepBootstrap = true
+	}
 	return &cluster, nil
 }
 
@@ -253,20 +288,6 @@ func (c *clusterOpts) Run() error {
 	//extract installer from release image.
 	if err := cluster.extractInstaller(); err != nil {
 		return err
-	}
-
-	if cluster.opts.keepBootstrap {
-		if err := cluster.initCustomInstaller(); err != nil {
-			return err
-		}
-
-		if err := cluster.patchCustomInstaller(); err != nil {
-			return err
-		}
-
-		if err := cluster.buildInstallCustomInstaller(); err != nil {
-			return err
-		}
 	}
 
 	// populate install-config.
@@ -337,20 +358,36 @@ func (c *Cluster) setComputeReplicas() {
 	c.TemplateData.MasterReplicas = masters
 }
 
-// TODO fix me
-func (c *Cluster) setPullSecret() error {
-	var cloudRedHatToken string
-
-	for _, token := range c.Config.Tokens {
-		if token.Registry == "cloud.redhat.com" {
-			cloudRedHatToken = token.Auth
-		}
+func (c *Cluster) setPullSecretDocker() error {
+	dockerToken := os.Getenv("DOCKER_TOKEN")
+	if dockerToken == "" && c.opts.releaseImageType == "custom" {
+		return fmt.Errorf("DOCKER_TOKEN is required for custom images")
+	}
+	if dockerToken == "" {
+		klog.Infof("DOCKER_TOKEN not found skipping docker pullSecret...")
+		return nil
+	}
+	// TODO maybe we read from file I am lazy :)
+	pullSecretDocker := fmt.Sprintf("{\"auths\":{\"https://index.docker.io/v1/\":{\"auth\":\"%s\"}}}", dockerToken)
+	var prettyJSON bytes.Buffer
+	if err := json.Indent(&prettyJSON, []byte(pullSecretDocker), "", "  "); err != nil {
+		return err
 	}
 
-	if cloudRedHatToken != "" {
-		for registry := range []string{"registry.connect.redhat.com", "registry.redhat.io"} {
-			fmt.Printf("%+v", registry)
-		}
+	// write to disk
+	destinationFile := fmt.Sprintf("%s/%s", c.Dir, ".PULL_SECRET_DOCKER")
+	if err := ioutil.WriteFile(destinationFile, prettyJSON.Bytes(), 0644); err != nil {
+		return err
+	}
+	c.PullSecrets = append(c.PullSecrets, pullSecretDocker)
+	return nil
+}
+
+func (c *Cluster) setPullSecretCloud() error {
+	// how this works https://access.redhat.com/solutions/4844461
+	cloudRedHatToken := os.Getenv("CLOUD_RED_HAT_TOKEN")
+	if cloudRedHatToken == "" {
+		return fmt.Errorf("unable to get token from ENV CLOUD_RED_HAT_TOKEN, please set and try again")
 	}
 
 	var r RedHatCloud
@@ -359,12 +396,114 @@ func (c *Cluster) setPullSecret() error {
 	if err != nil {
 		return err
 	}
-	if err := json.NewDecoder(res.Body).Decode(&r); err != nil {
+	body, err := ioutil.ReadAll(res.Body)
+	if err != nil {
 		return err
 	}
-	//  c.PullSecrets = r.AccessToken
+	if err := json.Unmarshal(body, &r); err != nil {
+		return err
+	}
+
+	bearer := fmt.Sprintf("Bearer %s", r.AccessToken)
+	pullSecretBytes, err := getCloudToken(bearer)
+	if err != nil {
+		return err
+	}
+	var prettyJSON bytes.Buffer
+	if err := json.Indent(&prettyJSON, pullSecretBytes, "", "  "); err != nil {
+		return err
+	}
+
+	// write to disk
+	destinationFile := fmt.Sprintf("%s/%s", c.Dir, ".PULL_SECRET_CLOUD")
+	err = ioutil.WriteFile(destinationFile, prettyJSON.Bytes(), 0644)
+	if err != nil {
+		return err
+	}
+
+	c.PullSecrets = append(c.PullSecrets, string(pullSecretBytes))
 	return nil
 }
+
+func (c *Cluster) getPullSecretBuild() ([]byte, error) {
+	//TODO be more flexible with more than 2
+	if len(c.PullSecrets) < 2 {
+		return nil, fmt.Errorf("2 pullSecrets required for merge")
+	}
+
+	var src, pullSecretBuildBytes []byte
+
+	for i, _ := range c.PullSecrets {
+		if i == 0 {
+			// skip we are doing N-1
+			continue
+		}
+		var err error
+		if i == 1 {
+			// seed with 0
+			src = []byte(c.PullSecrets[0])
+		} else {
+			// use combined
+			src = pullSecretBuildBytes
+		}
+		pullSecretBuildBytes, err = jsonm.MergeMergePatches(src, []byte(c.PullSecrets[i]))
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return pullSecretBuildBytes, nil
+}
+
+func (c *Cluster) setPullSecret() error {
+	pullSecretBuildBytes, err := c.getPullSecretBuild()
+	if err != nil {
+		return fmt.Errorf("1 %v", err)
+		// return err
+	}
+	// fmt.Fprintf("found pullSecret %s", pullSecretBuildBytes)
+	var prettyJSON bytes.Buffer
+	if err := json.Indent(&prettyJSON, pullSecretBuildBytes, "", "  "); err != nil {
+		return err
+	}
+
+	// write to disk
+	destinationFile := fmt.Sprintf("%s/%s", c.Dir, ".PULL_SECRET_BUILD")
+	if err := ioutil.WriteFile(destinationFile, prettyJSON.Bytes(), 0644); err != nil {
+		return err
+	}
+
+	// compress json
+	pullSecret := new(bytes.Buffer)
+	if err := json.Compact(pullSecret, pullSecretBuildBytes); err != nil {
+		return err
+	}
+	c.TemplateData.PullSecret = pullSecret.String()
+	return nil
+}
+
+func getCloudToken(bearerToken string) ([]byte, error) {
+	req, err := http.NewRequest("POST", cloudRedHatAccessTokenUrl, nil)
+	req.Header.Add("Authorization", bearerToken)
+	req.Header.Add("Accept", "application/json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	pullSecret := new(bytes.Buffer)
+	if err := json.Compact(pullSecret, body); err != nil {
+		return nil, err
+	}
+	return pullSecret.Bytes(), nil
+}
+
 func (c *Cluster) setProviderRegion() {
 	var region string
 
@@ -372,7 +511,7 @@ func (c *Cluster) setProviderRegion() {
 	//TODO allow override in config
 	switch c.opts.provider {
 	case "aws":
-		region = "us-east-1"
+		region = "us-west-1"
 	case "gcp":
 		region = "us-east1"
 	case "azure":
@@ -388,7 +527,7 @@ func (c *Cluster) setPullSecretCI() error {
 	kubeConfigFlags := genericclioptions.NewConfigFlags(true)
 	matchVersionKubeConfigFlags := kcmdutil.NewMatchVersionFlags(kubeConfigFlags)
 	f := kcmdutil.NewFactory(matchVersionKubeConfigFlags)
-	pullPath := fmt.Sprintf("%s/%s", c.Dir, "CI_PULL_SECRET")
+	pullPath := fmt.Sprintf("%s/%s", c.Dir, ".PULL_SECRET_CI")
 	o := &registry.LoginOptions{
 		ConfigFile: pullPath, // "-", prints stdout
 		IOStreams: genericclioptions.IOStreams{
@@ -414,7 +553,7 @@ func (c *Cluster) setPullSecretCI() error {
 	if err := json.Compact(pullSecret, raw); err != nil {
 		return fmt.Errorf("setPullSecretCI() %s", err)
 	}
-	c.TemplateData.PullSecret = pullSecret.String()
+	c.PullSecrets = append(c.PullSecrets, pullSecret.String())
 
 	return nil
 }
@@ -430,7 +569,7 @@ func (c *Cluster) extractInstaller() error {
 		Command: "openshift-install",
 		From:    c.opts.releaseImage,
 		SecurityOptions: imagemanifest.SecurityOptions{
-			RegistryConfig: fmt.Sprintf("%s/%s", c.Dir, "CI_PULL_SECRET"),
+			RegistryConfig: fmt.Sprintf("%s/%s", c.Dir, ".PULL_SECRET_BUILD"),
 		},
 	}
 	if err := o.Run(); err != nil {
@@ -461,13 +600,13 @@ func (c *Cluster) initCustomInstaller() error {
 	return nil
 }
 
-func (c *Cluster) patchCustomInstaller() error {
+func (c *Cluster) patchCustomInstaller(patch []byte) error {
 	f, err := os.Create(fmt.Sprintf("%s/src/github.com/openshift/installer/patch", c.Dir))
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	if _, err := f.WriteString(keepBootstrapPatch); err != nil {
+	if _, err := f.WriteString(string(patch)); err != nil {
 		return fmt.Errorf("patchCustomInstaller() %s", err)
 	}
 
@@ -559,12 +698,13 @@ func getConfigFile() (config.File, error) {
 }
 
 func (c *Cluster) writeInstallConfig() error {
-	tpl, err := template.ParseFiles(fmt.Sprintf("./templates/installer/%s/%s", c.opts.provider, "install-config.yaml"))
-
+	src := template_assets.MustAsset(fmt.Sprintf("bindata/templates/installer/%s/install-config.yaml", c.opts.provider))
+	tpl, err := template.New("install-config").Parse(string(src))
+	//tpl, err := template.ParseFiles(string(src))
 	if err != nil {
 		return fmt.Errorf("writeInstallConfig() failed with %s\n", err)
 	}
-
+	//
 	out, err := os.Create(fmt.Sprintf("%s/%s", c.Dir, "install-config.yaml"))
 	if err != nil {
 		return fmt.Errorf("writeInstallConfig() failed with %s\n", err)
@@ -658,29 +798,43 @@ func copyAndCapture(w io.Writer, r io.Reader) ([]byte, error) {
 	}
 }
 
-//TODO move to bindata
-var keepBootstrapPatch = `diff --git a/cmd/openshift-install/create.go b/cmd/openshift-install/create.go
---- a/cmd/openshift-install/create.go
-+++ b/cmd/openshift-install/create.go
-@@ -30,7 +30,6 @@ import (
- 	"github.com/openshift/installer/pkg/asset"
- 	assetstore "github.com/openshift/installer/pkg/asset/store"
- 	targetassets "github.com/openshift/installer/pkg/asset/targets"
--	destroybootstrap "github.com/openshift/installer/pkg/destroy/bootstrap"
- 	cov1helpers "github.com/openshift/library-go/pkg/config/clusteroperator/v1helpers"
- )
- 
-@@ -105,12 +104,6 @@ var (
- 					logrus.Fatal("Bootstrap failed to complete: ", err)
- 				}
- 
--				logrus.Info("Destroying the bootstrap resources...")
--				err = destroybootstrap.Destroy(rootOpts.dir)
--				if err != nil {
--					logrus.Fatal(err)
--				}
--
- 				err = waitForInstallComplete(ctx, config, rootOpts.dir)
- 				if err != nil {
- 					if err2 := logClusterOperatorConditions(ctx, config); err2 != nil {
-`
+func getReleaseByVersion(version string) (string, error) {
+	var r releasePayLoad
+	resp, err := http.Get("https://amd64.ocp.releases.ci.openshift.org/graph")
+	if err != nil {
+		return "", err
+	}
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	if err := json.Unmarshal(body, &r); err != nil {
+		return "", fmt.Errorf("failed to unmarshal: %v", err)
+	}
+	for _, release := range r.Nodes {
+		if release.Version == version {
+			return release.Payload, nil
+		}
+	}
+	return "", fmt.Errorf("no release payload found for version: %s", version)
+}
+
+func getLatest(releaseImageType, release string) (string, error) {
+	return httpGetRelease(fmt.Sprintf("https://openshift-release.svc.ci.openshift.org/api/v1/releasestream/%s.0-0.%s/latest", release, releaseImageType))
+}
+
+func httpGetRelease(release string) (string, error) {
+	var r releaseStream
+	resp, err := http.Get(release)
+	if err != nil {
+		return "", err
+	}
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	if err := json.Unmarshal(body, &r); err != nil {
+		return "", fmt.Errorf("failed to unmarshal: %v", err)
+	}
+	return r.PullSpec, nil
+}

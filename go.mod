@@ -10,6 +10,7 @@ require (
 	github.com/docker/docker v0.7.3-0.20190817195342-4760db040282
 	github.com/docker/go-units v0.4.0
 	github.com/docker/libtrust v0.0.0-20160708172513-aabc10ec26b7
+	github.com/evanphx/json-patch v4.2.0+incompatible
 	github.com/ghodss/yaml v1.0.0
 	github.com/gotestyourself/gotestyourself v2.2.0+incompatible // indirect
 	github.com/opencontainers/go-digest v1.0.0-rc1
