@@ -86,7 +86,7 @@ func bindataTemplatesInstallerAwsInstallConfigYaml() (*asset, error) {
 		return nil, err
 	}
 
-	info := bindataFileInfo{name: "bindata/templates/installer/aws/install-config.yaml", size: 676, mode: os.FileMode(420), modTime: time.Unix(1616522057, 0)}
+	info := bindataFileInfo{name: "bindata/templates/installer/aws/install-config.yaml", size: 676, mode: os.FileMode(420), modTime: time.Unix(1617054196, 0)}
 	a := &asset{bytes: bytes, info: info}
 	return a, nil
 }
@@ -106,7 +106,7 @@ func bindataTemplatesInstallerAzureInstallConfigYaml() (*asset, error) {
 		return nil, err
 	}
 
-	info := bindataFileInfo{name: "bindata/templates/installer/azure/install-config.yaml", size: 731, mode: os.FileMode(420), modTime: time.Unix(1616514934, 0)}
+	info := bindataFileInfo{name: "bindata/templates/installer/azure/install-config.yaml", size: 731, mode: os.FileMode(420), modTime: time.Unix(1617054196, 0)}
 	a := &asset{bytes: bytes, info: info}
 	return a, nil
 }
@@ -126,7 +126,7 @@ func bindataTemplatesInstallerGcpInstallConfigYaml() (*asset, error) {
 		return nil, err
 	}
 
-	info := bindataFileInfo{name: "bindata/templates/installer/gcp/install-config.yaml", size: 630, mode: os.FileMode(420), modTime: time.Unix(1616514934, 0)}
+	info := bindataFileInfo{name: "bindata/templates/installer/gcp/install-config.yaml", size: 630, mode: os.FileMode(420), modTime: time.Unix(1617054196, 0)}
 	a := &asset{bytes: bytes, info: info}
 	return a, nil
 }
@@ -146,7 +146,7 @@ func bindataTemplatesInstallerLibvirtInstallConfigYaml() (*asset, error) {
 		return nil, err
 	}
 
-	info := bindataFileInfo{name: "bindata/templates/installer/libvirt/install-config.yaml", size: 625, mode: os.FileMode(420), modTime: time.Unix(1616514934, 0)}
+	info := bindataFileInfo{name: "bindata/templates/installer/libvirt/install-config.yaml", size: 625, mode: os.FileMode(420), modTime: time.Unix(1617054196, 0)}
 	a := &asset{bytes: bytes, info: info}
 	return a, nil
 }

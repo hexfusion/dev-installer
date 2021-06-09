@@ -34,6 +34,7 @@ require (
 )
 
 replace (
+	bitbucket.org/ww/goautoneg => github.com/munnerz/goautoneg v0.0.0-20120707110453-a547fc61f48d
 	github.com/docker/docker => github.com/docker/docker v0.0.0-20180612054059-a9fbbdc8dd87
 	github.com/openshift/client-go => github.com/openshift/client-go v0.0.0-20191216194936-57f413491e9e
 	k8s.io/api => github.com/kubernetes/api v0.0.0-20191121175643-4ed536977f46

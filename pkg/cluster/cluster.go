@@ -820,7 +820,7 @@ func getReleaseByVersion(version string) (string, error) {
 }
 
 func getLatest(releaseImageType, release string) (string, error) {
-	return httpGetRelease(fmt.Sprintf("https://openshift-release.svc.ci.openshift.org/api/v1/releasestream/%s.0-0.%s/latest", release, releaseImageType))
+	return httpGetRelease(fmt.Sprintf("https://amd64.ocp.releases.ci.openshift.org/api/v1/releasestream/%s.0-0.%s/latest", release, releaseImageType))
 }
 
 func httpGetRelease(release string) (string, error) {
