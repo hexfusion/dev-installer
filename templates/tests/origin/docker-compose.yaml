@@ -1,0 +1,79 @@
+version: '2' 
+services:
+
+    tests:
+        image: quay.io/hexfusion/openshift-tests:4.4 
+        restart: always
+        ports:
+            - 9090
+        volumes:
+          - /home/remote/sbatsche/.ssh/libra.pem:/root/ssh-privatekey
+          - /homr/remote/sbatsche/.aws/credentials:/tmp/artifacts/installer/.aws/credentials
+          - {{ .ClusterDir }}/auth/:/tmp/artifacts/installer/auth/
+          - ./test-artifacts/cluster/:/tmp/artifacts/cluster/
+        networks:
+          prom_net:
+            ipv4_address: 172.4.172.23
+        environment:
+            KUBECONFIG: /tmp/artifacts/installer/auth/kubeconfig
+            KUBE_SSH_KEY_PATH: /root/ssh-privatekey
+            AWS_SHARED_CREDENTIALS_FILE: /tmp/artifacts/installer/.aws/credentials
+            KUBE_SSH_USER: core
+            PROVIDER_ARGS: "-provider=aws -gce-zone=us-east-1"
+            BASE_DOMAIN: devcluster.openshift.com
+            USER: test
+            HOME: /tmp
+
+        command:
+          - bash
+          - -c
+          - |
+            #!/bin/bash
+            set -x 
+
+            function setup_ssh_bastion() {
+              export SSH_BASTION_NAMESPACE=test-ssh-bastion
+              echo "Setting up ssh bastion"
+
+              echo "bastion $$SSH_BASTION_NAMESPACE"
+
+              mkdir -p ~/.ssh
+              cp "$${KUBE_SSH_KEY_PATH}" ~/.ssh/id_rsa
+              chmod 0600 ~/.ssh/id_rsa
+              if ! whoami &> /dev/null; then
+                if [[ -w /etc/passwd ]]; then
+                  echo "$${USER_NAME:-default}:x:$$(id -u):0:$${USER_NAME:-default} user:$${HOME}:/sbin/nologin" >> /etc/passwd
+                fi
+              fi
+              cat /etc/passwd
+              cat ~/.ssh/id_rsa
+              curl https://raw.githubusercontent.com/eparis/ssh-bastion/master/deploy/deploy.sh | bash -x
+              for i in $$(seq 0 30); do
+                # AWS fills only .hostname of a service
+                BASTION_HOST=$$(oc get service -n "$${SSH_BASTION_NAMESPACE}" ssh-bastion -o jsonpath='{.status.loadBalancer.ingress[0].hostname}')
+                if [[ -n "$${BASTION_HOST}" ]]; then break; fi
+                # Azure fills only .ip of a service. Use it as bastion host.
+                BASTION_HOST=$$(oc get service -n "$${SSH_BASTION_NAMESPACE}" ssh-bastion -o jsonpath='{.status.loadBalancer.ingress[0].ip}')
+                if [[ -n "$${BASTION_HOST}" ]]; then break; fi
+                echo "Waiting for SSH bastion load balancer service"
+                sleep 10
+              done
+              if [[ -z "$${BASTION_HOST}" ]]; then
+                echo "Failed to find bastion address, exiting"
+                exit 1
+              fi
+              export KUBE_SSH_BASTION="$${BASTION_HOST}:22"
+            } 
+
+            printenv
+            setup_ssh_bastion; openshift-tests run openshift/disruptive -o /tmp/artifacts/cluster/e2e.log --provider aws --junit-dir /tmp/artifacts/cluster/junit
+networks:
+  prom_net:
+    driver: bridge
+    driver_opts:
+      com.docker.network.enable_ipv6: "false"
+    ipam:
+      driver: default
+      config:
+      - subnet: 172.4.172.0/24
+        gateway: 172.4.172.1

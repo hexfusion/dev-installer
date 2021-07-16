@@ -172,6 +172,7 @@ type TemplateData struct {
 	ServiceCidr           string
 	NetworkType           string
 	LibvirtURI            string
+	ClusterDir            string
 }
 
 type releaseStream struct {
@@ -218,6 +219,7 @@ func newCluster(opts *clusterOpts) (*Cluster, error) {
 			ClusterName: clusterName,
 			SSHKey:      string(sshKey),
 			LogLevel:    "debug",
+			ClusterDir:  dir,
 		},
 	}
 
@@ -292,6 +294,11 @@ func (c *clusterOpts) Run() error {
 
 	// populate install-config.
 	if err := cluster.writeInstallConfig(); err != nil {
+		return err
+	}
+
+	// populate test docker-compose assets.
+	if err := cluster.writeTestAssets(); err != nil {
 		return err
 	}
 
@@ -718,6 +725,25 @@ func (c *Cluster) writeInstallConfig() error {
 	return nil
 }
 
+func (c *Cluster) writeTestAssets() error {
+	tpl, err := template.ParseFiles(fmt.Sprintf("./templates/tests/origin/%s", "docker-compose.yaml"))
+
+	if err != nil {
+		return fmt.Errorf("writeTestAssets() failed with %s\n", err)
+	}
+
+	out, err := os.Create(fmt.Sprintf("%s/%s", c.Dir, "docker-compose.yaml"))
+	if err != nil {
+		return fmt.Errorf("writeTestAssets() failed with %s\n", err)
+	}
+	defer out.Close()
+
+	err = tpl.Execute(out, c.TemplateData)
+	if err != nil {
+		return fmt.Errorf("writeTestAssets() failed with %s\n", err)
+	}
+	return nil
+}
 func (c *Cluster) runInstaller() error {
 	installerPath := fmt.Sprintf("%s/%s", c.Dir, "bin/openshift-install")
 	if c.opts.installerPath != "" {
