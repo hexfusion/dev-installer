@@ -19,18 +19,17 @@ import (
 	"text/template"
 	"time"
 
-	"k8s.io/klog"
-
 	jsonm "github.com/evanphx/json-patch"
 	"github.com/ghodss/yaml"
-	"github.com/hexfusion/dev-installer/pkg/cluster/admin/release"
 	"github.com/hexfusion/dev-installer/pkg/cluster/config"
-	imagemanifest "github.com/hexfusion/dev-installer/pkg/cluster/image/manifest"
-	"github.com/hexfusion/dev-installer/pkg/cluster/registry"
 	"github.com/hexfusion/dev-installer/pkg/template_assets"
+	"github.com/openshift/oc/pkg/cli/admin/release"
+	imagemanifest "github.com/openshift/oc/pkg/cli/image/manifest"
+	"github.com/openshift/oc/pkg/cli/registry/login"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
+	"k8s.io/klog/v2"
 	kcmdutil "k8s.io/kubectl/pkg/cmd/util"
 )
 
@@ -535,7 +534,7 @@ func (c *Cluster) setPullSecretCI() error {
 	matchVersionKubeConfigFlags := kcmdutil.NewMatchVersionFlags(kubeConfigFlags)
 	f := kcmdutil.NewFactory(matchVersionKubeConfigFlags)
 	pullPath := fmt.Sprintf("%s/%s", c.Dir, ".PULL_SECRET_CI")
-	o := &registry.LoginOptions{
+	o := &login.LoginOptions{
 		ConfigFile: pullPath, // "-", prints stdout
 		IOStreams: genericclioptions.IOStreams{
 			In:     os.Stdin,
