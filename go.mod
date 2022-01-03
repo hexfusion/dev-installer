@@ -3,11 +3,8 @@ module github.com/hexfusion/dev-installer
 go 1.17
 
 require (
-	github.com/docker/distribution v2.7.1+incompatible
 	github.com/evanphx/json-patch v4.12.0+incompatible
 	github.com/ghodss/yaml v1.0.0
-	github.com/opencontainers/go-digest v1.0.0
-	github.com/openshift/library-go v0.0.0-20211209153216-ed9bc958bd8a
 	github.com/openshift/oc v0.0.0-20211224202608-5fe720329482
 	github.com/spf13/cobra v1.2.1
 	github.com/spf13/pflag v1.0.5
@@ -36,6 +33,7 @@ require (
 	github.com/containers/image/v5 v5.15.0 // indirect
 	github.com/containers/storage v1.33.0 // indirect
 	github.com/davecgh/go-spew v1.1.1 // indirect
+	github.com/docker/distribution v2.7.1+incompatible // indirect
 	github.com/docker/docker v20.10.3+incompatible // indirect
 	github.com/docker/docker-credential-helpers v0.6.4 // indirect
 	github.com/docker/go-connections v0.4.0 // indirect
@@ -78,11 +76,13 @@ require (
 	github.com/modern-go/reflect2 v1.0.2 // indirect
 	github.com/monochromegane/go-gitignore v0.0.0-20200626010858-205db1a8cc00 // indirect
 	github.com/morikuni/aec v1.0.0 // indirect
+	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.0.2-0.20190823105129-775207bd45b6 // indirect
 	github.com/opencontainers/runc v1.0.1 // indirect
 	github.com/opencontainers/runtime-spec v1.0.3-0.20210326190908-1c3f411f0417 // indirect
 	github.com/openshift/api v0.0.0-20211209135129-c58d9f695577 // indirect
 	github.com/openshift/client-go v0.0.0-20211209144617-7385dd6338e3 // indirect
+	github.com/openshift/library-go v0.0.0-20211209153216-ed9bc958bd8a // indirect
 	github.com/peterbourgon/diskv v2.0.1+incompatible // indirect
 	github.com/pkg/errors v0.9.1 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
