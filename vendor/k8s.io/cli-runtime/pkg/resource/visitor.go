@@ -18,6 +18,7 @@ package resource
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -29,7 +30,6 @@ import (
 
 	"golang.org/x/text/encoding/unicode"
 	"golang.org/x/text/transform"
-
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -39,8 +39,6 @@ import (
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/yaml"
 	"k8s.io/apimachinery/pkg/watch"
-	"k8s.io/cli-runtime/pkg/kustomize"
-	"sigs.k8s.io/kustomize/pkg/fs"
 )
 
 const (
@@ -86,8 +84,6 @@ type Info struct {
 	// but if set it should be equal to or newer than the resource version of the
 	// object (however the server defines resource version).
 	ResourceVersion string
-	// Optional, should this resource be exported, stripped of cluster-specific and instance specific fields
-	Export bool
 }
 
 // Visit implements Visitor
@@ -97,10 +93,10 @@ func (i *Info) Visit(fn VisitorFunc) error {
 
 // Get retrieves the object from the Namespace and Name fields
 func (i *Info) Get() (err error) {
-	obj, err := NewHelper(i.Client, i.Mapping).Get(i.Namespace, i.Name, i.Export)
+	obj, err := NewHelper(i.Client, i.Mapping).Get(i.Namespace, i.Name)
 	if err != nil {
 		if errors.IsNotFound(err) && len(i.Namespace) > 0 && i.Namespace != metav1.NamespaceDefault && i.Namespace != metav1.NamespaceAll {
-			err2 := i.Client.Get().AbsPath("api", "v1", "namespaces", i.Namespace).Do().Error()
+			err2 := i.Client.Get().AbsPath("api", "v1", "namespaces", i.Namespace).Do(context.TODO()).Error()
 			if err2 != nil && errors.IsNotFound(err2) {
 				return err2
 			}
@@ -158,7 +154,7 @@ func (i *Info) ObjectName() string {
 
 // String returns the general purpose string representation
 func (i *Info) String() string {
-	basicInfo := fmt.Sprintf("Name: %q, Namespace: %q\nObject: %+q", i.Name, i.Namespace, i.Object)
+	basicInfo := fmt.Sprintf("Name: %q, Namespace: %q", i.Name, i.Namespace)
 	if i.Mapping != nil {
 		mappingInfo := fmt.Sprintf("Resource: %q, GroupVersionKind: %q", i.Mapping.Resource.String(),
 			i.Mapping.GroupVersionKind.String())
@@ -434,6 +430,10 @@ func (v FlattenListVisitor) Visit(fn VisitorFunc) error {
 			if len(info.ResourceVersion) != 0 {
 				item.ResourceVersion = info.ResourceVersion
 			}
+			// propagate list source to items source
+			if len(info.Source) != 0 {
+				item.Source = info.Source
+			}
 			if err := fn(item, nil); err != nil {
 				errs = append(errs, err)
 			}
@@ -525,24 +525,6 @@ func (v *FileVisitor) Visit(fn VisitorFunc) error {
 	utf16bom := unicode.BOMOverride(unicode.UTF8.NewDecoder())
 	v.StreamVisitor.Reader = transform.NewReader(f, utf16bom)
 
-	return v.StreamVisitor.Visit(fn)
-}
-
-// KustomizeVisitor is wrapper around a StreamVisitor, to handle Kustomization directories
-type KustomizeVisitor struct {
-	Path string
-	*StreamVisitor
-}
-
-// Visit in a KustomizeVisitor gets the output of Kustomize build and save it in the Streamvisitor
-func (v *KustomizeVisitor) Visit(fn VisitorFunc) error {
-	fSys := fs.MakeRealFS()
-	var out bytes.Buffer
-	err := kustomize.RunKustomizeBuild(&out, fSys, v.Path)
-	if err != nil {
-		return err
-	}
-	v.StreamVisitor.Reader = bytes.NewReader(out.Bytes())
 	return v.StreamVisitor.Visit(fn)
 }
 
@@ -690,16 +672,6 @@ func RetrieveLazy(info *Info, err error) error {
 	if info.Object == nil {
 		return info.Get()
 	}
-	return nil
-}
-
-// CreateAndRefresh creates an object from input info and refreshes info with that object
-func CreateAndRefresh(info *Info) error {
-	obj, err := NewHelper(info.Client, info.Mapping).Create(info.Namespace, true, info.Object, nil)
-	if err != nil {
-		return err
-	}
-	info.Refresh(obj, true)
 	return nil
 }
 
