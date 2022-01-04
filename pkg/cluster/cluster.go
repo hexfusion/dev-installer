@@ -297,9 +297,10 @@ func (c *clusterOpts) Run() error {
 	}
 
 	// populate test docker-compose assets.
-	if err := cluster.writeTestAssets(); err != nil {
-		return err
-	}
+	// TODO review these templates it makes sense but needs work.
+	//if err := cluster.writeTestAssets(); err != nil {
+	//	return err
+	//}
 
 	//build cluster.
 	if err := cluster.runInstaller(); err != nil {
