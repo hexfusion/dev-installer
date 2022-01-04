@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+
+read -p "OCP Minor version: " VERSION
+
+read -p "Number of control-plane: " MASTERS
+
+read -p "Number of workers: " WORKERS
+
+dev-installer cluster -p aws -r latest -t nightly -s ~/.ssh/libra.pub --version $VERSION -w $WORKERS -m $MASTERS

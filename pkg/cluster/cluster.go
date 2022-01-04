@@ -259,7 +259,7 @@ func newCluster(opts *clusterOpts) (*Cluster, error) {
 
 	if opts.pullSecret == "" {
 		if err := cluster.setPullSecretCI(); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("failed to authenticate try oc login: %v", err)
 		}
 		if err := cluster.setPullSecretCloud(); err != nil {
 			return nil, err
