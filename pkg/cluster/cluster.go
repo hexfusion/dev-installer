@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"net/url"
 	"os"
@@ -201,7 +200,7 @@ func newCluster(opts *clusterOpts) (*Cluster, error) {
 	}
 
 	clusterName := fmt.Sprintf("%s-%s-%s", user.Username, opts.name, date)
-	sshKey, err := ioutil.ReadFile(opts.sshKeyPath)
+	sshKey, err := os.ReadFile(opts.sshKeyPath)
 	if err != nil {
 		return nil, err
 	}
@@ -383,7 +382,7 @@ func (c *Cluster) setPullSecretDocker() error {
 
 	// write to disk
 	destinationFile := fmt.Sprintf("%s/%s", c.Dir, ".PULL_SECRET_DOCKER")
-	if err := ioutil.WriteFile(destinationFile, prettyJSON.Bytes(), 0644); err != nil {
+	if err := os.WriteFile(destinationFile, prettyJSON.Bytes(), 0644); err != nil {
 		return err
 	}
 	c.PullSecrets = append(c.PullSecrets, pullSecretDocker)
@@ -403,7 +402,7 @@ func (c *Cluster) setPullSecretCloud() error {
 	if err != nil {
 		return err
 	}
-	body, err := ioutil.ReadAll(res.Body)
+	body, err := io.ReadAll(res.Body)
 	if err != nil {
 		return err
 	}
@@ -423,7 +422,7 @@ func (c *Cluster) setPullSecretCloud() error {
 
 	// write to disk
 	destinationFile := fmt.Sprintf("%s/%s", c.Dir, ".PULL_SECRET_CLOUD")
-	err = ioutil.WriteFile(destinationFile, prettyJSON.Bytes(), 0644)
+	err = os.WriteFile(destinationFile, prettyJSON.Bytes(), 0644)
 	if err != nil {
 		return err
 	}
@@ -476,7 +475,7 @@ func (c *Cluster) setPullSecret() error {
 
 	// write to disk
 	destinationFile := fmt.Sprintf("%s/%s", c.Dir, ".PULL_SECRET_BUILD")
-	if err := ioutil.WriteFile(destinationFile, prettyJSON.Bytes(), 0644); err != nil {
+	if err := os.WriteFile(destinationFile, prettyJSON.Bytes(), 0644); err != nil {
 		return err
 	}
 
@@ -491,6 +490,9 @@ func (c *Cluster) setPullSecret() error {
 
 func getCloudToken(bearerToken string) ([]byte, error) {
 	req, err := http.NewRequest("POST", cloudRedHatAccessTokenUrl, nil)
+	if err != nil {
+		return nil, err
+	}
 	req.Header.Add("Authorization", bearerToken)
 	req.Header.Add("Accept", "application/json")
 
@@ -500,7 +502,7 @@ func getCloudToken(bearerToken string) ([]byte, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -534,7 +536,11 @@ func (c *Cluster) setPullSecretCI() error {
 	kubeConfigFlags := genericclioptions.NewConfigFlags(true)
 	matchVersionKubeConfigFlags := kcmdutil.NewMatchVersionFlags(kubeConfigFlags)
 	f := kcmdutil.NewFactory(matchVersionKubeConfigFlags)
-	pullPath := fmt.Sprintf("%s/%s", c.Dir, ".PULL_SECRET_CI")
+	authFile := os.Getenv("REGISTRY_AUTH_FILE")
+	if authFile == "" {
+		return fmt.Errorf("REGISTRY_AUTH_FILE ENV is required for CI images")
+	}
+	pullPath := fmt.Sprintf("%s/%s", c.Dir, authFile)
 	o := &login.LoginOptions{
 		ConfigFile: pullPath, // "-", prints stdout
 		IOStreams: genericclioptions.IOStreams{
@@ -551,7 +557,7 @@ func (c *Cluster) setPullSecretCI() error {
 		return fmt.Errorf("setPullSecretCI() %s", err)
 	}
 
-	raw, err := ioutil.ReadFile(pullPath)
+	raw, err := os.ReadFile(pullPath)
 	if err != nil {
 		return fmt.Errorf("setPullSecretCI() %s", err)
 	}
@@ -648,7 +654,7 @@ func (c *Cluster) buildInstallCustomInstaller() error {
 	stderrIn, _ := cmd.StderrPipe()
 	err := cmd.Start()
 	if err != nil {
-		return fmt.Errorf("cmd.Start() failed with '%s'\n", err)
+		return fmt.Errorf("cmd.Start() failed with '%v", err)
 	}
 
 	var wg sync.WaitGroup
@@ -692,7 +698,7 @@ func getConfigFile() (config.File, error) {
 		return c, err
 	}
 	configPath := fmt.Sprintf("%s/.config/dev-installer/config.yaml", homeDir)
-	configFile, err := ioutil.ReadFile(configPath)
+	configFile, err := os.ReadFile(configPath)
 	if err != nil {
 		return c, err
 	}
@@ -714,13 +720,13 @@ func (c *Cluster) writeInstallConfig() error {
 	//
 	out, err := os.Create(fmt.Sprintf("%s/%s", c.Dir, "install-config.yaml"))
 	if err != nil {
-		return fmt.Errorf("writeInstallConfig() failed with %s\n", err)
+		return fmt.Errorf("writeInstallConfig() failed with %v", err)
 	}
 	defer out.Close()
 
 	err = tpl.Execute(out, c.TemplateData)
 	if err != nil {
-		return fmt.Errorf("writeInstallConfig() failed with %s\n", err)
+		return fmt.Errorf("writeInstallConfig() failed with %v", err)
 	}
 	return nil
 }
@@ -830,7 +836,7 @@ func getReleaseByVersion(version string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
 	}
@@ -855,7 +861,7 @@ func httpGetRelease(release string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return "", err
 	}
