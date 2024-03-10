@@ -12,6 +12,7 @@ controlPlane:
   name: master
   platform: {}
   replicas: {{ .MasterReplicas }}
+featureSet: TechPreviewNoUpgrade
 metadata:
   creationTimestamp: null
   name: {{ .ClusterName }}
