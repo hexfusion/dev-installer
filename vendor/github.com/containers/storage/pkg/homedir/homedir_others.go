@@ -1,4 +1,5 @@
-// +build !linux,!darwin,!freebsd
+//go:build !linux && !darwin && !freebsd && !windows
+// +build !linux,!darwin,!freebsd,!windows
 
 package homedir
 
@@ -7,6 +8,8 @@ package homedir
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 )
 
 // GetRuntimeDir is unsupported on non-linux system.
@@ -19,17 +22,17 @@ func StickRuntimeDirContents(files []string) ([]string, error) {
 	return nil, errors.New("homedir.StickRuntimeDirContents() is not supported on this system")
 }
 
-// GetDataHome is unsupported on non-linux system.
-func GetDataHome() (string, error) {
-	return "", errors.New("homedir.GetDataHome() is not supported on this system")
-}
-
-// GetConfigHome is unsupported on non-linux system.
+// GetConfigHome returns XDG_CONFIG_HOME.
+// GetConfigHome returns $HOME/.config and nil error if XDG_CONFIG_HOME is not set.
+//
+// See also https://standards.freedesktop.org/basedir-spec/latest/ar01s03.html
 func GetConfigHome() (string, error) {
-	return "", errors.New("homedir.GetConfigHome() is not supported on this system")
-}
-
-// GetCacheHome is unsupported on non-linux system.
-func GetCacheHome() (string, error) {
-	return "", errors.New("homedir.GetCacheHome() is not supported on this system")
+	if xdgConfigHome := os.Getenv("XDG_CONFIG_HOME"); xdgConfigHome != "" {
+		return xdgConfigHome, nil
+	}
+	home := Get()
+	if home == "" {
+		return "", errors.New("could not get either XDG_CONFIG_HOME or HOME")
+	}
+	return filepath.Join(home, ".config"), nil
 }
